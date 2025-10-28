@@ -33,25 +33,21 @@ tasks {
 
     signPlugin {
         certificateChain.set("""
-    -----BEGIN CERTIFICATE-----
-    MIIElgCCAn4CCQDo83LWYj2QSTANBgkqhkiG9w0BAQsFADANMQswCQYDVQQGEwJQ
-    ...
-    gdZzxCN8t1EmH8kD2Yve6YKGFCRAIIzveEg=
-    -----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+///
+-----END CERTIFICATE-----
   """.trimIndent())
 
         privateKey.set("""
-    -----BEGIN RSA PRIVATE KEY-----
-    MIIJKgIBAAKCAgEAwU8awS22Rw902BmwVDDBMlTREX440BAAVM40NW3E0lJ7YTJG
-    ...
-    EnNBfIVFhh6khisKqTBWSEo5iS2RYJcuZs961riCn1LARztiaXL4l17oW8t+Qw==
-    -----END RSA PRIVATE KEY-----
+-----BEGIN PRIVATE KEY-----
+///
+-----END PRIVATE KEY-----
   """.trimIndent())
 
-        password.set("8awS22%#3(4wVDDBMlTREX")
+        password.set("4aw...")
     }
 
     publishPlugin {
-        token.set("perm:a961riC....l17oW8t+Qw==")
+        token.set("perm-...")
     }
 }
