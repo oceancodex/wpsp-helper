@@ -1,0 +1,16 @@
+<idea-plugin>
+    <id>com.wpsp.wpsp-helper</id>
+    <name>WPSP Helper</name>
+    <vendor email="oceancodexvn@gmail.com">oceancodex</vendor>
+    <version>0.3.0</version>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.jetbrains.php</depends>
+
+    <description>WPSP Helper helps you navigate and suggest routes in the WPSP framework accurately and extremely quickly. Perfect support for WordPress plugin building projects using the WPSP framework.</description>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <completion.contributor implementationClass="com.wpsp.helper.WpspRouteCompletionContributor" language="any" order="first"/>
+        <psi.referenceContributor implementation="com.wpsp.helper.WpspRouteReferenceContributor" language=""/>
+    </extensions>
+</idea-plugin>
