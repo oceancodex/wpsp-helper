@@ -14,10 +14,10 @@ intellij {
     plugins.set(listOf("com.jetbrains.php"))
 
     // 🔥 Thêm dòng này để tự động tương thích các bản IDE mới hơn
-    updateSinceUntilBuild.set(false)
+//    updateSinceUntilBuild.set(false)
 
     // (Tuỳ chọn) Tắt buildSearchableOptions để giảm thời gian build
-    instrumentCode.set(false)
+//    instrumentCode.set(false)
 }
 
 tasks {

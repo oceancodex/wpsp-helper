@@ -1,9 +1,9 @@
 <idea-plugin>
-    <idea-version since-build="242.0" until-build="254.*" />
+    <idea-version since-build="242.0"/>
     <id>com.wpsp.wpsp-helper</id>
     <name>WPSP Helper</name>
     <vendor email="oceancodexvn@gmail.com">oceancodex</vendor>
-    <version>0.4.2</version>
+    <version>0.4.1</version>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.jetbrains.php</depends>
