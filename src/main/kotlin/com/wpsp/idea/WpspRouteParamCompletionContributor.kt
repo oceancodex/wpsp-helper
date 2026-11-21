@@ -57,10 +57,12 @@ class WpspRouteParamCompletionContributor : CompletionContributor() {
 							routeNameIdx = 1
 							classHint = extractClassHint(params.getOrNull(0))
 						}
+
 						isRouteFacadeCall(call) -> {
 							routeNameIdx = 0
 							classHint = null
 						}
+
 						else -> return
 					}
 
@@ -127,6 +129,7 @@ class WpspRouteParamCompletionContributor : CompletionContributor() {
 			val raw = (classRef as? ClassReference)?.type?.toString() ?: classRef?.name
 			raw?.substringAfterLast("\\")?.takeIf { it.isNotEmpty() }
 		}
+
 		else -> null
 	}
 
