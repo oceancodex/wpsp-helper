@@ -25,7 +25,7 @@ Lines are **1-based** in your JSON.
 ```
 
 ## Build (locally)
-- Install **JDK 17**
+- Install **JDK 21** and **Gradle 9.9.2**
 - Open the project in PhpStorm → Gradle tool window → run task `intellij > buildPlugin`
   or run on CLI: `./gradlew build`
 - Your plugin zip will be at: `build/distributions/wpsp-helper-{version}.zip`
