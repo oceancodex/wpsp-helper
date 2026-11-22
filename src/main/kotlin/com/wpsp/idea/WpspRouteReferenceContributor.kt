@@ -3,89 +3,47 @@ package com.wpsp.helper
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.*
 import com.intellij.util.ProcessingContext
-import com.jetbrains.php.lang.psi.elements.*
-import com.jetbrains.php.lang.psi.resolve.types.PhpType
-import com.jetbrains.php.lang.psi.elements.impl.ClassConstantReferenceImpl
+import com.jetbrains.php.lang.psi.elements.ParameterList
+import com.jetbrains.php.lang.psi.elements.StringLiteralExpression
 
 /**
- * Tạo reference cho tham số thứ 2 của:
- *   anyNs\Funcs::route('Apis' | Apis::class, 'route.name')
- *   any_prefix_route('Apis' | Apis::class, 'route.name')   // function name ends with _route
- *   $this->route('Apis' | Apis::class, 'route.name') / $obj->route(...)
+ * Gắn PsiReference cho tham số [1] (route name) để Ctrl+Click / Go to Declaration
+ * nhảy tới dòng khai báo route:
+ *   Funcs::route('Apis' | Apis::class, 'route.name')
+ *   any_prefix_route('Apis', 'route.name')
+ *   $this->route('Apis', 'route.name') / $obj->route(...)
+ *
+ * Provider này được gọi cho RẤT nhiều string literal (cả khi highlight),
+ * nên làm các kiểm tra rẻ trước, chỉ đụng tới index ở bước cuối.
  */
 class WpspRouteReferenceContributor : PsiReferenceContributor() {
+
 	override fun registerReferenceProviders(registrar: PsiReferenceRegistrar) {
 		registrar.registerReferenceProvider(
 			PlatformPatterns.psiElement(StringLiteralExpression::class.java),
 			object : PsiReferenceProvider() {
-				override fun getReferencesByElement(element: PsiElement, context: ProcessingContext): Array<PsiReference> {
+				override fun getReferencesByElement(
+					element: PsiElement,
+					context: ProcessingContext
+				): Array<PsiReference> {
 					val literal = element as? StringLiteralExpression ?: return PsiReference.EMPTY_ARRAY
+
+					// 1) Phải là tham số [1] của route call (kiểm tra PSI, rất rẻ).
 					val paramList = literal.parent as? ParameterList ?: return PsiReference.EMPTY_ARRAY
-
-					// Chỉ hoạt động khi đã có ít nhất 1 JSON
-					if (WpspRouteIndex.routesFor(literal).isEmpty()) return PsiReference.EMPTY_ARRAY
-
-					val params = paramList.parameters
-					val idx = params.indexOf(literal)
-					if (idx != 1) return PsiReference.EMPTY_ARRAY
+					val args = paramList.parameters
+					if (args.indexOf(literal) != WpspRouteCalls.NAME_ARG) return PsiReference.EMPTY_ARRAY
+					if (!WpspRouteCalls.isWpspRouteCall(paramList.parent)) return PsiReference.EMPTY_ARRAY
 
 					val routeName = literal.contents
 					if (routeName.isBlank()) return PsiReference.EMPTY_ARRAY
 
-					val routeClassHint = extractRouteClassName(params.getOrNull(0))
+					// 2) File phải thuộc một plugin có .wpsp-routes.json (index đã cache).
+					if (WpspRouteIndex.routesFor(literal).isEmpty()) return PsiReference.EMPTY_ARRAY
 
-					val call = paramList.parent
-
-					// function: *_route(...)
-					if (call is FunctionReference) {
-						val fn = call.name ?: ""
-						if (fn.endsWith("_route")) {
-							return arrayOf(WpspRouteReference(literal, routeName, literal.project, routeClassHint))
-						}
-					}
-
-					// method: ::route(...) hoặc ->route(...)
-					if (call is MethodReference) {
-						val mName = call.name ?: return PsiReference.EMPTY_ARRAY
-						if (mName == "route") {
-							val cr = call.classReference
-							if (cr is ClassReference) {
-								val name = cr.type.toString()
-								if (name.endsWith("\\Funcs") || name == "Funcs") {
-									return arrayOf(WpspRouteReference(literal, routeName, literal.project, routeClassHint))
-								}
-							} else {
-								// instance call $this->route() / $obj->route()
-								return arrayOf(WpspRouteReference(literal, routeName, literal.project, routeClassHint))
-							}
-						}
-					}
-
-					return PsiReference.EMPTY_ARRAY
+					val classHint = WpspRouteCalls.classHint(args.getOrNull(WpspRouteCalls.CLASS_ARG))
+					return arrayOf(WpspRouteReference(literal, routeName, classHint))
 				}
 			}
 		)
-	}
-
-	private fun extractRouteClassName(firstParam: PsiElement?): String? {
-		when (firstParam) {
-			is StringLiteralExpression -> {
-				val s = firstParam.contents.trim()
-				if (s.isNotBlank()) return s
-			}
-
-			is ClassConstantReference -> {
-				// Apis::class -> lấy tên class (không cần namespace)
-				val classRef = firstParam.classReference
-				val typeText = (classRef as? ClassReference)?.type?.toString()
-				val raw = typeText ?: classRef?.name
-				if (!raw.isNullOrBlank()) {
-					// Chuẩn hóa về tên đơn giản, ví dụ \WPSP\routes\Apis -> Apis
-					val simple = raw.substringAfterLast("\\")
-					if (simple.isNotBlank()) return simple
-				}
-			}
-		}
-		return null
 	}
 }
