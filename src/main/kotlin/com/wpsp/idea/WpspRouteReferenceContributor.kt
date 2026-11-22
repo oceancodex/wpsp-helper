@@ -23,13 +23,13 @@ class WpspRouteReferenceContributor : PsiReferenceContributor() {
 					val paramList = literal.parent as? ParameterList ?: return PsiReference.EMPTY_ARRAY
 
 					// Chỉ hoạt động khi đã có ít nhất 1 JSON
-					if (WpspRouteIndex.routes(literal.project).isEmpty()) return PsiReference.EMPTY_ARRAY
+					if (WpspRouteIndex.routesFor(literal).isEmpty()) return PsiReference.EMPTY_ARRAY
 
 					val params = paramList.parameters
 					val idx = params.indexOf(literal)
 					if (idx != 1) return PsiReference.EMPTY_ARRAY
 
-					val routeName = literal.contents ?: return PsiReference.EMPTY_ARRAY
+					val routeName = literal.contents
 					if (routeName.isBlank()) return PsiReference.EMPTY_ARRAY
 
 					val routeClassHint = extractRouteClassName(params.getOrNull(0))
@@ -50,7 +50,7 @@ class WpspRouteReferenceContributor : PsiReferenceContributor() {
 						if (mName == "route") {
 							val cr = call.classReference
 							if (cr is ClassReference) {
-								val name = cr.type?.toString() ?: cr.name ?: ""
+								val name = cr.type.toString()
 								if (name.endsWith("\\Funcs") || name == "Funcs") {
 									return arrayOf(WpspRouteReference(literal, routeName, literal.project, routeClassHint))
 								}
@@ -70,8 +70,8 @@ class WpspRouteReferenceContributor : PsiReferenceContributor() {
 	private fun extractRouteClassName(firstParam: PsiElement?): String? {
 		when (firstParam) {
 			is StringLiteralExpression -> {
-				val s = firstParam.contents?.trim()
-				if (!s.isNullOrBlank()) return s
+				val s = firstParam.contents.trim()
+				if (s.isNotBlank()) return s
 			}
 
 			is ClassConstantReference -> {

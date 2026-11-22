@@ -71,17 +71,11 @@ class WpspRouteParamCompletionContributor : CompletionContributor() {
 						?.contents?.trim()
 					if (routeName.isNullOrBlank()) return
 
-					val routes = WpspRouteIndex.routes(position.project)
-					val targets = routes[routeName] ?: return
-
-					val currentPlugin = detectPlugin(parameters.originalFile.virtualFile?.path)
+					val targets = WpspRouteIndex.routesFor(position)[routeName] ?: return
 
 					val matched = targets.filter { t ->
-						val pluginOk = currentPlugin == null ||
-								File(t.jsonBaseDir).name.equals(currentPlugin, ignoreCase = true)
-						val classOk = classHint.isNullOrBlank() ||
+						classHint.isNullOrBlank() ||
 								File(t.fileRel).nameWithoutExtension.equals(classHint, ignoreCase = true)
-						pluginOk && classOk
 					}
 					if (matched.isEmpty()) return
 
@@ -94,7 +88,7 @@ class WpspRouteParamCompletionContributor : CompletionContributor() {
 					// Các param đã viết trong mảng (trừ literal đang gõ)
 					val used = PsiTreeUtil.findChildrenOfType(array, StringLiteralExpression::class.java)
 						.filter { it != literal }
-						.mapNotNull { it.contents?.trim() }
+						.mapNotNull { it.contents.trim() }
 						.toSet()
 
 					val inQuotes = literal != null
@@ -123,7 +117,7 @@ class WpspRouteParamCompletionContributor : CompletionContributor() {
 
 	/** 'Apis' hoặc Apis::class -> "Apis" */
 	private fun extractClassHint(first: PsiElement?): String? = when (first) {
-		is StringLiteralExpression -> first.contents?.trim()?.takeIf { it.isNotEmpty() }
+		is StringLiteralExpression -> first.contents.trim().takeIf { it.isNotEmpty() }
 		is ClassConstantReference -> {
 			val classRef = first.classReference
 			val raw = (classRef as? ClassReference)?.type?.toString() ?: classRef?.name
@@ -131,14 +125,6 @@ class WpspRouteParamCompletionContributor : CompletionContributor() {
 		}
 
 		else -> null
-	}
-
-	private fun detectPlugin(path: String?): String? {
-		val p = path?.replace('\\', '/') ?: return null
-		val marker = "/wp-content/plugins/"
-		val idx = p.indexOf(marker)
-		if (idx < 0) return null
-		return p.substring(idx + marker.length).substringBefore('/').takeIf { it.isNotBlank() }
 	}
 
 	/** Route::<bất kỳ method nào>(...) */

@@ -41,10 +41,10 @@ class WpspRouteClassCompletionContributor : CompletionContributor() {
 					val call = paramList.parent
 					if (!isRouteCall(call)) return
 
-					val project = literal.project
+//					val project = literal.project
 
-					// lấy map từ JSON
-					val map = WpspRouteIndex.routes(project)
+					// lấy map từ JSON — chỉ plugin hiện tại
+					val map = WpspRouteIndex.routesFor(literal)
 					if (map.isEmpty()) return
 
 					// Lấy danh sách group name từ JSON: Apis, Ajaxs, AdminPages, RewriteFrontPages

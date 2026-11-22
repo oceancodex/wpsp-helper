@@ -20,87 +20,46 @@ class WpspRouteCompletionContributor : CompletionContributor() {
 					result: CompletionResultSet
 				) {
 					val literal = PsiTreeUtil.getParentOfType(
-						parameters.position,
-						StringLiteralExpression::class.java
+						parameters.position, StringLiteralExpression::class.java
 					) ?: return
 
-					val paramList = PsiTreeUtil.getParentOfType(
-						parameters.position,
-						ParameterList::class.java
-					) ?: return
+					val paramList = literal.parent as? ParameterList ?: return
+					if (paramList.parameters.indexOf(literal) != 1) return
 
-					val index = paramList.parameters.indexOf(
-						PsiTreeUtil.getParentOfType(
-							parameters.position,
-							StringLiteralExpression::class.java
-						) ?: parameters.position.parent
-					)
+					val call = paramList.parent as? FunctionReference ?: return
+					if (!isRouteCall(call)) return
 
-					if (index != 1) return
+					// Chỉ route của plugin chứa file đang edit
+					val routes = WpspRouteIndex.routesFor(literal)
+					if (routes.isEmpty()) return
 
-					// Lấy call expression chính xác trong mọi context
-					val call = com.intellij.psi.util.PsiTreeUtil.getParentOfType(
-						literal,
-						FunctionReference::class.java,
-						MethodReference::class.java
-					)
+					val allowed = routes.keys.map { it.lowercase() }.toSet()
+					val valid = mutableListOf<LookupElement>()
 
-					// Nếu không phải Function/Method call -> bỏ
-					if (call == null) return
-
-					// ĐIỀU KIỆN isRouteCall đã sửa trước đó
-					val isRouteCall = when (call) {
-						is MethodReference -> {
-							val name = call.name ?: ""
-							if (name.endsWith("_route")) {
-								true
-							} else if (name == "route") {
-								val classRef = call.classReference
-								if (classRef is ClassReference) {
-									val fqn = classRef.fqn ?: classRef.name ?: ""
-									fqn.endsWith("\\Funcs") || fqn.equals("Funcs", ignoreCase = true)
-								} else {
-									true
-								}
-							} else false
-						}
-
-						is FunctionReference -> (call.name ?: "").endsWith("_route")
-					}
-
-					if (!isRouteCall) return
-
-					val allRoutes = WpspRouteIndex.routes(literal.project)
-					if (allRoutes.isEmpty()) return
-
-					val allowed = allRoutes.keys.map { it.lowercase() }.toSet()
-					val valid = mutableListOf<LookupElement>();
-
-					// Thu hết suggestions của contributors khác và lọc
 					result.runRemainingContributors(parameters) { completion ->
 						val s = completion.lookupElement.lookupString.lowercase()
-						if (s in allowed) {
-							valid.add(completion.lookupElement)
-						}
+						if (s in allowed) valid.add(completion.lookupElement)
 					}
 
-					// Nếu chưa có route nào thì tự sinh
 					if (valid.isEmpty()) {
-						for (route in allRoutes.keys) {
-							valid.add(LookupElementBuilder.create(route))
-						}
+						routes.keys.forEach { valid.add(LookupElementBuilder.create(it).withIcon(RouteIcons.ROUTE)) }
 					}
 
-					// Clear danh sách + add routes duy nhất
-					for (v in valid) {
-						result.addElement(v)
-					}
-
-					// Chặn toàn bộ contributors còn lại
+					valid.forEach { result.addElement(it) }
 					result.stopHere()
 				}
-
 			}
 		)
+	}
+
+	private fun isRouteCall(call: FunctionReference): Boolean {
+		val name = call.name ?: return false
+		if (name.endsWith("_route")) return true
+		if (call is MethodReference && name == "route") {
+			val classRef = call.classReference as? ClassReference ?: return true // $this->route()
+			val fqn = classRef.fqn ?: classRef.name ?: ""
+			return fqn.endsWith("\\Funcs") || fqn.equals("Funcs", ignoreCase = true)
+		}
+		return false
 	}
 }

@@ -1,7 +1,6 @@
 package com.wpsp.helper
 
 import com.google.gson.Gson
-import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
@@ -12,47 +11,139 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.psi.PsiElement
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
+import com.intellij.lang.injection.InjectedLanguageManager
+import com.intellij.injected.editor.VirtualFileWindow
+import com.intellij.testFramework.LightVirtualFile
 
 object WpspRouteIndex {
 	private val LOG = Logger.getInstance(WpspRouteIndex::class.java)
 	private val gson = Gson()
+	private const val MAPPING_FILE = ".wpsp-routes.json"
 
 	data class Target(
-		val fileRel: String,   // "routes/Apis.php"
-		val line: Int,         // 0-based
-		val jsonBaseDir: String, // thư mục chứa JSON (absolute path)
-		val routeParameters: List<String> = emptyList()   // Route parameters
+		val fileRel: String,              // "routes/Apis.php"
+		val line: Int,
+		val jsonBaseDir: String,          // thư mục chứa JSON (VirtualFile.path, dùng '/')
+		val routeParameters: List<String> = emptyList()
 	)
 
-	// cache: Project -> routeName -> list of targets (có thể duplicate)
-	private val cache: MutableMap<Project, Map<String, List<Target>>> = ConcurrentHashMap()
+	/** pluginDir -> routeName -> targets */
+	private val cache: MutableMap<Project, Map<String, Map<String, List<Target>>>> = ConcurrentHashMap()
 	private val watchSet = ConcurrentHashMap.newKeySet<Project>()
 
-	fun routes(project: Project): Map<String, List<Target>> {
+	// ------------------------------------------------------------------
+	// Public API
+	// ------------------------------------------------------------------
+
+	/** Route của plugin chứa element. Đúng cả trong completion (dùng originalFile). */
+	/** Route của plugin chứa element. Xử lý cả completion copy, Blade/injected PHP. */
+	fun routesFor(element: PsiElement): Map<String, List<Target>> =
+		routes(element.project, contextVirtualFile(element))
+
+	/** Lấy VirtualFile thật trên đĩa của file đang edit. */
+	fun contextVirtualFile(element: PsiElement): VirtualFile? {
+		val project = element.project
+
+		// 1) Injected PHP (Blade {{ }}, @php...) -> file host
+		val topFile = InjectedLanguageManager.getInstance(project).getTopLevelFile(element)
+			?: element.containingFile
+			?: return null
+
+		// 2) Completion copy -> file gốc
+		val psi = topFile.originalFile
+
+		var vf: VirtualFile? = psi.virtualFile
+			?: psi.viewProvider.virtualFile
+			?: topFile.viewProvider.virtualFile
+
+		// 3) Bóc các lớp file ảo
+		repeat(3) {
+			vf = when (val v = vf) {
+				is VirtualFileWindow -> v.delegate
+				is LightVirtualFile -> v.originalFile ?: return@repeat
+				else -> return@repeat
+			}
+		}
+		return vf
+	}
+
+	/**
+	 * Route áp dụng cho contextFile: thư mục cha gần nhất có .wpsp-routes.json.
+	 * File không thuộc plugin nào (hoặc null) → gộp tất cả.
+	 */
+	fun routes(project: Project, contextFile: VirtualFile?): Map<String, List<Target>> {
+		val index = index(project)
+		val pluginDir = findOwningPluginDir(contextFile, index.keys)
+		if (pluginDir != null) return index[pluginDir].orEmpty()
+		return mergeAll(index)
+	}
+
+	/** Gộp mọi plugin — chỉ dùng khi không có context file. */
+	fun routes(project: Project): Map<String, List<Target>> = mergeAll(index(project))
+
+	fun allRouteNames(project: Project, contextFile: VirtualFile?): Set<String> =
+		routes(project, contextFile).keys
+
+	fun resolveVirtualFile(project: Project, target: Target): VirtualFile? {
+		val candidate = File(target.jsonBaseDir, target.fileRel)
+		return LocalFileSystem.getInstance().findFileByIoFile(candidate)
+	}
+
+	// ------------------------------------------------------------------
+	// Index
+	// ------------------------------------------------------------------
+
+	private fun index(project: Project): Map<String, Map<String, List<Target>>> {
 		return cache[project] ?: run {
-			val map = readAll(project)
-			cache[project] = map
+			val idx = readAll(project)
+			cache[project] = idx
 			setupWatcher(project)
-			map
+			idx
 		}
 	}
 
-	fun allRouteNames(project: Project): Set<String> = routes(project).keys
+	private fun findOwningPluginDir(file: VirtualFile?, pluginDirs: Set<String>): String? {
+		if (file == null) return null
+		var dir: VirtualFile? = if (file.isDirectory) file else file.parent
+		while (dir != null) {
+			if (dir.path in pluginDirs) return dir.path
+			dir = dir.parent
+		}
+		// Fallback: so tiền tố đường dẫn (có dấu '/' để wpsp không khớp wpsp-lite)
+		val path = file.path
+		return pluginDirs
+			.filter { path.startsWith("$it/") }
+			.maxByOrNull { it.length }
+	}
 
-	private fun readAll(project: Project): Map<String, List<Target>> {
-		val result = LinkedHashMap<String, MutableList<Target>>()
-		val files = findMappingFiles(project)
-		if (files.isEmpty()) return emptyMap()
+	private fun mergeAll(index: Map<String, Map<String, List<Target>>>): Map<String, List<Target>> {
+		if (index.isEmpty()) return emptyMap()
+		if (index.size == 1) return index.values.first()
+		val out = LinkedHashMap<String, MutableList<Target>>()
+		for (routes in index.values) {
+			for ((name, targets) in routes) {
+				out.computeIfAbsent(name) { mutableListOf() }.addAll(targets)
+			}
+		}
+		return out
+	}
 
-		for (vf in files) {
+	private fun readAll(project: Project): Map<String, Map<String, List<Target>>> {
+		val result = LinkedHashMap<String, Map<String, List<Target>>>()
+		for (vf in findMappingFiles(project)) {
 			try {
 				val jsonText = FileUtil.loadFile(File(vf.path), StandardCharsets.UTF_8)
 				val root = gson.fromJson(jsonText, JsonObject::class.java) ?: continue
-				val jsonBaseDir = File(vf.path).parent // base dir của JSON
-				mergeJson(root, jsonBaseDir, result, project)
+				val baseDir = vf.parent ?: continue
+				val jsonBaseDir = baseDir.path
+
+				val routes = LinkedHashMap<String, MutableList<Target>>()
+				mergeJson(root, baseDir.name, jsonBaseDir, routes)
+				if (routes.isNotEmpty()) result[jsonBaseDir] = routes
 			} catch (t: Throwable) {
 				LOG.warn("Failed to read ${vf.path}: ${t.message}", t)
 			}
@@ -62,52 +153,38 @@ object WpspRouteIndex {
 
 	private fun mergeJson(
 		root: JsonObject,
+		pluginName: String,
 		jsonBaseDir: String,
-		out: MutableMap<String, MutableList<Target>>,
-		project: Project
+		out: MutableMap<String, MutableList<Target>>
 	) {
 		// 1) Scope filter
-		val scope = root.get("scope")?.asString
-		if (!scope.isNullOrBlank()) {
-			val currentPlugin = File(jsonBaseDir).name
-			if (!scope.equals(currentPlugin, ignoreCase = true)) return
-		}
+		val scope = root.get("scope")?.takeIf { it.isJsonPrimitive }?.asString
+		if (!scope.isNullOrBlank() && !scope.equals(pluginName, ignoreCase = true)) return
 
 		// 2) Lấy phần routes nếu có
-		val main = if (root.has("routes")) root.getAsJsonObject("routes") else root
+		val main = if (root.has("routes") && root.get("routes").isJsonObject)
+			root.getAsJsonObject("routes") else root
 
-		// 3) Kiểm tra flat format (legacy)
-		var looksFlat = false
-		for ((key, value) in main.entrySet()) {
-			if (value.isJsonObject && value.asJsonObject.has("file")) {
-				looksFlat = true
-				break
-			}
-		}
-
+		// 3) Flat format (legacy)
+		val looksFlat = main.entrySet().any { (_, v) -> v.isJsonObject && v.asJsonObject.has("file") }
 		if (looksFlat) {
-			// Format A: { "route.name": { "file": "...", "line": 123 } }
 			for ((route, v) in main.entrySet()) {
-				val obj = v.asJsonObject
-				append(out, route, obj, jsonBaseDir)
+				if (v.isJsonObject) append(out, route, v.asJsonObject, jsonBaseDir)
 			}
 			return
 		}
 
-		// 4) Format nhóm: { "Group": [...], "Group2": {...} }
+		// 4) Format nhóm
 		for ((_, groupVal) in main.entrySet()) {
-			if (groupVal.isJsonObject) {
-				for ((route, v) in groupVal.asJsonObject.entrySet()) {
-					val obj = v.asJsonObject
-					append(out, route, obj, jsonBaseDir)
+			when {
+				groupVal.isJsonObject -> for ((route, v) in groupVal.asJsonObject.entrySet()) {
+					if (v.isJsonObject) append(out, route, v.asJsonObject, jsonBaseDir)
 				}
-			} else if (groupVal.isJsonArray) {
-				for (elem in groupVal.asJsonArray) {
-					if (elem.isJsonObject) {
-						for ((route, v) in elem.asJsonObject.entrySet()) {
-							val obj = v.asJsonObject
-							append(out, route, obj, jsonBaseDir)
-						}
+
+				groupVal.isJsonArray -> for (elem in groupVal.asJsonArray) {
+					if (!elem.isJsonObject) continue
+					for ((route, v) in elem.asJsonObject.entrySet()) {
+						if (v.isJsonObject) append(out, route, v.asJsonObject, jsonBaseDir)
 					}
 				}
 			}
@@ -121,7 +198,7 @@ object WpspRouteIndex {
 		jsonBaseDir: String
 	) {
 		val fileRel = obj.get("file")?.asString ?: return
-		val line = obj.get("line")?.asInt ?: 0 // 0-based
+		val line = obj.get("line")?.asInt ?: 0
 
 		val params = obj.get("route_parameters")
 			?.takeIf { it.isJsonArray }
@@ -129,9 +206,13 @@ object WpspRouteIndex {
 			?.mapNotNull { e -> if (e.isJsonPrimitive) e.asString else null }
 			?: emptyList()
 
-		val t = Target(fileRel, line, jsonBaseDir, params)
-		out.computeIfAbsent(route) { mutableListOf() }.add(t)
+		out.computeIfAbsent(route) { mutableListOf() }
+			.add(Target(fileRel, line, jsonBaseDir, params))
 	}
+
+	// ------------------------------------------------------------------
+	// Tìm file mapping
+	// ------------------------------------------------------------------
 
 	private fun findMappingFiles(project: Project): List<VirtualFile> {
 		val root = project.basePath ?: return emptyList()
@@ -139,82 +220,33 @@ object WpspRouteIndex {
 		val projectDir = File(root)
 
 		val pathsToCheck = arrayListOf<File>()
-
 		when {
-			// Case 4: đang mở trong plugin cụ thể
-			isPluginFolder(projectDir) -> {
-				pathsToCheck.add(projectDir)
-			}
-			// Case 3: đang mở plugins folder
-			projectDir.name == "plugins" -> {
+			isPluginFolder(projectDir) -> pathsToCheck.add(projectDir)
+			projectDir.name == "plugins" ->
 				projectDir.listFiles()?.filter { it.isDirectory }?.let { pathsToCheck.addAll(it) }
-			}
-			// Case 2: đang mở wp-content folder
-			projectDir.name == "wp-content" -> {
-				projectDir.resolve("plugins").listFiles()
-					?.filter { it.isDirectory }
-					?.let { pathsToCheck.addAll(it) }
-			}
-			// Case 1: mở ở public_html hoặc trên cao hơn
-			else -> {
-				val wc = projectDir.resolve("wp-content/plugins")
-				wc.listFiles()
-					?.filter { it.isDirectory }
-					?.let { pathsToCheck.addAll(it) }
-			}
+
+			projectDir.name == "wp-content" ->
+				projectDir.resolve("plugins").listFiles()?.filter { it.isDirectory }?.let { pathsToCheck.addAll(it) }
+
+			else ->
+				projectDir.resolve("wp-content/plugins").listFiles()?.filter { it.isDirectory }?.let { pathsToCheck.addAll(it) }
 		}
 
-		val out = mutableListOf<VirtualFile>()
-		for (pluginDir in pathsToCheck) {
-			val jf = pluginDir.resolve(".wpsp-routes.json")
-			fs.findFileByIoFile(jf)?.let { if (!it.isDirectory) out.add(it) }
+		return pathsToCheck.mapNotNull { dir ->
+			fs.findFileByIoFile(dir.resolve(MAPPING_FILE))?.takeIf { !it.isDirectory }
 		}
-		return out
 	}
 
-	private fun isPluginFolder(f: File): Boolean {
-		return f.parentFile?.name == "plugins"
-				&& f.parentFile?.parentFile?.name == "wp-content"
-	}
+	private fun isPluginFolder(f: File): Boolean =
+		f.parentFile?.name == "plugins" && f.parentFile?.parentFile?.name == "wp-content"
 
 	private fun setupWatcher(project: Project) {
 		if (!watchSet.add(project)) return
 		val connection = ApplicationManager.getApplication().messageBus.connect(project)
 		connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
 			override fun after(events: MutableList<out VFileEvent>) {
-				val changed = events.any { e ->
-					val p = e.file?.canonicalPath ?: e.path
-					p != null && p.endsWith(".wpsp-routes.json")
-				}
-				if (changed) cache.remove(project)
+				if (events.any { it.path.endsWith(MAPPING_FILE) }) cache.remove(project)
 			}
 		})
-	}
-
-	private fun currentPluginName(project: Project): String? {
-		val projectDir = File(project.basePath ?: return null)
-
-		if (isPluginFolder(projectDir)) {
-			return projectDir.name
-		}
-
-		// Nếu mở ở public_html hoặc wp-content hoặc plugins
-		val pluginsDir = findPluginsDir(projectDir) ?: return null
-		val children = pluginsDir.listFiles()?.filter { it.isDirectory }.orEmpty()
-		return if (children.size == 1) children.first().name else null
-	}
-
-	private fun findPluginsDir(dir: File): File? {
-		if (dir.name == "plugins" && dir.parentFile?.name == "wp-content") {
-			return dir
-		}
-		val sub = dir.resolve("wp-content/plugins")
-		return if (sub.exists() && sub.isDirectory) sub else null
-	}
-
-	fun resolveVirtualFile(project: Project, target: Target): VirtualFile? {
-		val fs = LocalFileSystem.getInstance()
-		val candidate = File(target.jsonBaseDir, target.fileRel) // resolve từ thư mục JSON
-		return fs.findFileByIoFile(candidate)
 	}
 }
